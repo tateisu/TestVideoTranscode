@@ -1,15 +1,17 @@
 package jp.juggler.testvideotranscode
 
+import android.app.Application
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.FileProvider
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.SavedStateHandle
-import androidx.lifecycle.ViewModel
 import androidx.lifecycle.map
 import androidx.lifecycle.viewModelScope
 import jp.juggler.testvideotranscode.Utils.vg
@@ -19,60 +21,105 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
+import java.util.*
+import java.util.concurrent.atomic.AtomicReference
 
 class ActMain : AppCompatActivity() {
+    companion object{
+        const val TAG="TestVideoTranscode"
+    }
 
-    class VM(stateHandle: SavedStateHandle) : ViewModel() {
+    class ProgressInfo(val time:Long,val ratio:Double)
+
+    class VM(
+        application: Application,
+        stateHandle: SavedStateHandle
+    ) : AndroidViewModel(application) {
+
         val logText = stateHandle.getLiveData<String>("logText")
-        val progress = MutableLiveData<Double>()
         val transcodeTask = MutableLiveData<Deferred<*>?>()
         val compressedPath = stateHandle.getLiveData<String>("compressedPath")
         val compressedFile = compressedPath.map { if (it.isNullOrEmpty()) null else File(it) }
+        val progress = MutableLiveData<Double>()
 
         @Suppress("BlockingMethodInNonBlockingContext")
-        fun handleInputUri(context: Context, uri: Uri) {
-            viewModelScope.launch {
-                try {
-                    logText.value = "処理開始"
-                    progress.value = 0.0
-                    compressedPath.value = null
-                    val (outFile, inFile) = withContext(Dispatchers.IO) {
-                        val fileProviderCacheDir = Utils.fileProviderCacheDir(context)
-
-                        val outFile = File.createTempFile("output", ".mp4", fileProviderCacheDir)
-                        val inFile = File.createTempFile("input", ".bin", fileProviderCacheDir)
-                        FileOutputStream(inFile).use { outStream ->
-                            (context.contentResolver.openInputStream(uri)
-                                ?: error("contentResolver.openInputStream returns null. uri=$uri")
-                                    ).use { inStream ->
-                                    inStream.copyTo(outStream)
+        fun handleInputUri(context: Context, uri: Uri) = viewModelScope.launch {
+            try {
+                logText.value = "処理開始"
+                progress.value = 0.0
+                compressedPath.value = null
+                withContext(Dispatchers.IO) {
+                    val fileProviderCacheDir = Utils.fileProviderCacheDir(context)
+                    val outFile = File.createTempFile("output", ".mp4", fileProviderCacheDir)
+                    val inFile = File.createTempFile("input", ".bin", fileProviderCacheDir)
+                    FileOutputStream(inFile).use { outStream ->
+                        (context.contentResolver.openInputStream(uri)
+                            ?: error("contentResolver.openInputStream returns null. uri=$uri"))
+                            .use { it.copyTo(outStream) }
+                    }
+                    withContext(Dispatchers.Main){
+                        var lastProgress = 0.0
+                        var lastProgressCount =0
+                        val task = async {
+                            transcodeVideo(
+                                inFile = inFile,
+                                outFile = outFile,
+                                onProgress = { time,ratio->
+                                    ++lastProgressCount
+                                    lastProgress = ratio
                                 }
+                            )
+                        }.also {
+                            // UIからキャンセルしたい時に使う
+                            transcodeTask.value = it
                         }
-                        Pair(outFile, inFile)
-                    }
-
-                    val task = async {
-                        transcodeVideo(inFile = inFile, outFile = outFile) {
-                            progress.value = it
+                        launch(Dispatchers.Main){
+                            while( task.isActive) {
+                                progress.value = lastProgress
+                                delay(1000L)
+                            }
                         }
-                    }.also { transcodeTask.value = it }
-                    val resultFile = task.await()
-                    compressedPath.value = resultFile.canonicalPath
-                    logText.value = "変換終了"
-                } catch (ex: Throwable) {
-                    ex.printStackTrace()
-                    if (ex is CancellationException) {
-                        logText.value = "キャンセルされました"
-                    } else {
-                        logText.value = "${ex.javaClass.simpleName} ${ex.message}\n${ex.stackTrace}"
+                        val resultFile = task.await()
+                        logText.value = "変換終了"
+                        compressedPath.value = resultFile.canonicalPath
                     }
-                } finally {
-                    transcodeTask.value = null
                 }
+            } catch (ex: Throwable) {
+                Log.e(TAG,"transcode failed",ex)
+                if (ex is CancellationException) {
+                    logText.value = "キャンセルされた"
+                } else {
+                    logText.value = "${ex.javaClass.simpleName} ${ex.message}"
+                }
+            } finally {
+                transcodeTask.value = null
+            }
+        }
+
+        fun openOutput(activity: AppCompatActivity) {
+            try {
+                val compressedFile = compressedFile.value
+                    ?: error("compressedFile is null")
+
+                val uri = FileProvider.getUriForFile(
+                    activity,
+                    activity.packageName + ".fileprovider",
+                    compressedFile
+                )
+                Intent.createChooser(
+                    Intent(Intent.ACTION_VIEW).apply {
+                        setDataAndType(uri, "video/mp4")
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    },
+                    "どのアプリで開く?"
+                ).let { activity.startActivity(it) }
+            } catch (ex: Throwable) {
+                ex.printStackTrace()
             }
         }
     }
@@ -107,7 +154,7 @@ class ActMain : AppCompatActivity() {
             views.btnCancel.vg(converting)
         }
         vm.progress.observe(this) {
-            val percent = (it ?: 0.0).times(100.0)
+            val percent = (it ?: 0.0) * 100.0
             views.progress.max = 100
             views.progress.progress = percent.toInt()
             vm.logText.value = "変換中 ${percent}%"
@@ -123,28 +170,11 @@ class ActMain : AppCompatActivity() {
             vm.transcodeTask.value?.cancel()
         }
         views.btnViewOutput.setOnClickListener {
-            try {
-                val activity = this
-                val compressedFile = vm.compressedFile.value
-                    ?: error("compressedFile is null")
-                val uri = FileProvider.getUriForFile(
-                    activity,
-                    activity.packageName + ".fileprovider",
-                    compressedFile
-                )
-                Intent.createChooser(
-                    Intent(Intent.ACTION_VIEW).apply {
-                        setDataAndType(uri, "video/mp4")
-                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    },
-                    "どのアプリで開く?"
-                ).let { activity.startActivity(it) }
-            } catch (ex: Throwable) {
-                ex.printStackTrace()
-            }
+            vm.openOutput(this)
         }
 
         if (savedInstanceState == null) {
+            // 初期状態の表示を作る
             vm.compressedPath.value = null
             vm.transcodeTask.value = null
         }
