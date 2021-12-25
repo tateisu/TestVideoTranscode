@@ -2,4 +2,5 @@
     <string name="app_name">TestVideoTranscode</string>
     <string name="choose_input">入力ファイルを選択</string>
     <string name="view_output">出力ファイルを表示</string>
+    <string name="dump_codec_info">コーデック情報をログに出力</string>
 </resources>
