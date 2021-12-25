@@ -13,12 +13,22 @@
         android:orientation="vertical">
 
         <Button
+            android:id="@+id/btnCodecInfo"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/dump_codec_info" />
+
+        <Button
             android:id="@+id/btnChooseInput"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:drawableStart="@drawable/ic_folder"
-            android:drawablePadding="4dp"
             android:text="@string/choose_input" />
+
+        <Button
+            android:id="@+id/btnCancel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@android:string/cancel" />
 
         <TextView
             android:id="@+id/tvLog"
@@ -31,11 +41,6 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content" />
 
-        <Button
-            android:id="@+id/btnCancel"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="@android:string/cancel" />
 
         <Button
             android:id="@+id/btnViewOutput"
