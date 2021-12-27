@@ -1,5 +1,7 @@
 package jp.juggler.testvideotranscode
 
+import android.media.MediaCodecList
+import android.media.MediaFormat
 import android.media.MediaMetadataRetriever
 import android.os.Build
 import java.io.File
@@ -31,6 +33,45 @@ class VideoInfo(
         private fun MediaMetadataRetriever.long(key: Int) =
             string(key)?.toLongOrNull()
 
+
+        /**
+         * 調査のためコーデックを列挙して情報をログに出す
+         */
+        fun dumpCodec() {
+            val mcl = MediaCodecList(MediaCodecList.REGULAR_CODECS)
+            for (info in mcl.codecInfos) {
+                try {
+                    if (!info.isEncoder) continue
+                    val caps = try {
+                        info.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC) ?: continue
+                    } catch (ex: Throwable) {
+                        continue
+                    }
+
+                    for (colorFormat in caps.colorFormats) {
+                        log.i("${info.name} color 0x${colorFormat.toString(16)}")
+                        // OMX.qcom.video.encoder.avc color 7fa30c04 不明
+                        // OMX.qcom.video.encoder.avc color 7f000789 COLOR_FormatSurface
+                        // OMX.qcom.video.encoder.avc color 7f420888 COLOR_FormatYUV420Flexible
+                        // OMX.qcom.video.encoder.avc color 15 COLOR_Format32bitBGRA8888
+                    }
+                    caps.videoCapabilities.bitrateRange?.let { range ->
+                        log.i("bitrateRange $range")
+                    }
+                    caps.videoCapabilities.supportedFrameRates?.let { range ->
+                        log.i("supportedFrameRates $range")
+                    }
+                    if (Build.VERSION.SDK_INT >= 28) {
+                        caps.encoderCapabilities.qualityRange?.let { range ->
+                            log.i("qualityRange $range")
+                        }
+                    }
+                } catch (ex: Throwable) {
+                    log.w(ex)
+                    // type is not supported
+                }
+            }
+        }
     }
 
     val mimeType = mmr.string(MediaMetadataRetriever.METADATA_KEY_MIMETYPE)

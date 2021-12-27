@@ -37,12 +37,12 @@ object VideoTranscoderNatario {
                             onProgress(progressChannel.receive())
                             delay(1000L)
                         }
-                    } catch (ex: ClosedReceiveChannelException) {
-                        log.i("progressChannel closed.")
-                    } catch (ex: CancellationException) {
-                        log.i("progressSender cancelled.")
                     } catch (ex: Throwable) {
-                        log.w(ex)
+                        when (ex) {
+                            is ClosedReceiveChannelException -> log.i("progress closed.")
+                            is CancellationException -> log.i("progress cancelled.")
+                            else -> log.w(ex)
+                        }
                     }
                 }
                 try {
@@ -66,30 +66,29 @@ object VideoTranscoderNatario {
                                     .bitRate(60_000L)
                                     .build()
                             )
-
                             .setListener(object : TranscoderListener {
+                                override fun onTranscodeCanceled() {
+                                    log.w("onTranscodeCanceled")
+                                    cont.resumeWithException(CancellationException("transcode cancelled."))
+                                }
+
+                                override fun onTranscodeFailed(exception: Throwable) {
+                                    log.w("onTranscodeFailed")
+                                    cont.resumeWithException(exception)
+                                }
+
+                                override fun onTranscodeCompleted(successCode: Int) {
+                                    when (successCode) {
+                                        Transcoder.SUCCESS_TRANSCODED -> outFile
+                                        /* Transcoder.SUCCESS_NOT_NEEDED */ else -> inFile
+                                    }.let { cont.resumeWith(Result.success(it)) }
+                                }
+
                                 override fun onTranscodeProgress(progress: Double) {
                                     val result = progressChannel.trySend(progress.toFloat())
                                     if (!result.isSuccess) {
                                         log.w("trySend $result")
                                     }
-                                }
-
-                                override fun onTranscodeCompleted(successCode: Int) {
-                                    log.i("onTranscodeCompleted $successCode")
-                                    val file = when (successCode) {
-                                        Transcoder.SUCCESS_TRANSCODED -> outFile
-                                        else /* Transcoder.SUCCESS_NOT_NEEDED */ -> inFile
-                                    }
-                                    cont.resumeWith(Result.success(file))
-                                }
-
-                                override fun onTranscodeCanceled() {
-                                    cont.resumeWithException(CancellationException("transcode cancelled."))
-                                }
-
-                                override fun onTranscodeFailed(exception: Throwable) {
-                                    cont.resumeWithException(exception)
                                 }
                             }).transcode()
                         cont.invokeOnCancellation { future.cancel(true) }

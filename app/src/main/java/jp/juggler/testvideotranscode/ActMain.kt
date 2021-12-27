@@ -3,10 +3,7 @@ package jp.juggler.testvideotranscode
 import android.app.Activity
 import android.app.Application
 import android.content.Intent
-import android.media.MediaCodecList
-import android.media.MediaFormat
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.view.WindowManager
@@ -29,6 +26,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
+import java.lang.ref.WeakReference
 
 class ActMain : AppCompatActivity() {
     companion object {
@@ -40,12 +38,14 @@ class ActMain : AppCompatActivity() {
         stateHandle: SavedStateHandle
     ) : AndroidViewModel(appArg) {
 
-        val logText = stateHandle.getLiveData<String>("logText", null)
+        val transcodeBusy = MutableLiveData(false)
+        private var refTranscodeTask: WeakReference<Deferred<*>>? = null
+        val progressPercent = MutableLiveData(0)
         private val compressedPath = stateHandle.getLiveData<String>("compressedPath", null)
         private val compressedMimeType = stateHandle.getLiveData<String>("compressedMimeType", null)
         val compressedFile = compressedPath.map { if (it.isNullOrEmpty()) null else File(it) }
-        val transcodeTask = MutableLiveData<Deferred<*>?>(null)
-        val progressPercent = MutableLiveData(0)
+
+        val logText = stateHandle.getLiveData<String>("logText", null)
 
         private val app: Application
             get() = super.getApplication()
@@ -58,75 +58,77 @@ class ActMain : AppCompatActivity() {
                 logText.value = "処理開始"
                 progressPercent.value = 0
                 compressedPath.value = null
+                transcodeBusy.value = true
+                var outFile: File
+                var tempFile: File
                 withContext(Dispatchers.IO) {
+                    // ファイル名を決定する
                     val fileProviderCacheDir = Utils.fileProviderCacheDir(context)
-                    val outFile = File.createTempFile("output", ".mp4", fileProviderCacheDir)
-                    val inFile = File.createTempFile("input", ".bin", fileProviderCacheDir)
-                    try {
-                        FileOutputStream(inFile).use { outStream ->
-                            (context.contentResolver.openInputStream(uri)
-                                ?: error("contentResolver.openInputStream returns null. uri=$uri"))
-                                .use { it.copyTo(outStream) }
-                        }
-                        withContext(Dispatchers.Main) {
-                            val task = async {
-                                when (buttonId) {
-                                    R.id.rbLitr -> VideoTranscoderLiTr.transcodeVideo(
-                                        context,
-                                        inFile = inFile,
-                                        outFile = outFile,
-                                        onProgress = { ratio ->
-                                            // 特に指定がなければメインスレッドで呼び出される
-                                            // linkedin/LiTr の場合、呼び出される頻度は十分に低かった
-                                            val percent = (ratio * 100f + 0.5f).toInt()
-                                            progressPercent.value = percent
-                                            logText.value = "変換中 ${percent}%"
-                                        }
-                                    )
-                                    R.id.rbNatario -> VideoTranscoderNatario.transcodeVideo(
-                                        inFile,
-                                        outFile,
-                                        onProgress = { ratio ->
-                                            val percent = (ratio * 100f + 0.5f).toInt()
-                                            progressPercent.value = percent
-                                            logText.value = "変換中 ${percent}%"
-                                        }
-                                    )
-                                    R.id.rbSili -> VideoTranscoderSili.transcodeVideo(
-                                        context,
-                                        inFile,
-                                        outFile,
-                                    )
-                                    else ->error("incorrect button id $buttonId")
+                    outFile = File.createTempFile("output", ".mp4", fileProviderCacheDir)
+                    tempFile = File.createTempFile("temp", ".bin", fileProviderCacheDir)
+                    // content:// URLの内容をローカルにコピーする
+                    (context.contentResolver.openInputStream(uri)
+                        ?: error("contentResolver.openInputStream returns null. uri=$uri"))
+                        .use { src -> FileOutputStream(tempFile).use { dst -> src.copyTo(dst) } }
+                }
+                try {
+                    val task = async {
+                        when (buttonId) {
+                            R.id.rbLitr -> VideoTranscoderLiTr.transcodeVideo(
+                                context,
+                                inFile = tempFile,
+                                outFile = outFile,
+                                onProgress = { ratio ->
+                                    // 特に指定がなければメインスレッドで呼び出される
+                                    // linkedin/LiTr の場合、呼び出される頻度は十分に低かった
+                                    val percent = (ratio * 100f + 0.5f).toInt()
+                                    progressPercent.value = percent
+                                    logText.value = "変換中 ${percent}%"
                                 }
-                            }
-                            // UIからのキャンセルに使う
-                            transcodeTask.value = task
-                            val result = task.await()
-                            val timeEnd = SystemClock.elapsedRealtime()
-                            val resultInfo = result.videoInfo
-                            logText.value = "変換終了 ${timeEnd-timeStart}ms $resultInfo"
-                            compressedPath.value = result.canonicalPath
-                            compressedMimeType.value = resultInfo.mimeType
+                            )
+                            R.id.rbNatario -> VideoTranscoderNatario.transcodeVideo(
+                                tempFile,
+                                outFile,
+                                onProgress = { ratio ->
+                                    val percent = (ratio * 100f + 0.5f).toInt()
+                                    progressPercent.value = percent
+                                    logText.value = "変換中 ${percent}%"
+                                }
+                            )
+                            R.id.rbSili -> VideoTranscoderSili.transcodeVideo(
+                                context,
+                                tempFile,
+                                outFile,
+                            )
+                            else -> error("incorrect button id $buttonId")
                         }
-                    } finally {
-                        // 保持し続ける必要がないファイルは削除する
-                        arrayOf(inFile, outFile).forEach {
-                            if (it.canonicalPath != compressedPath.value) {
-                                it.delete()
-                            }
+                    }
+                    // UIからのキャンセルに使う
+                    refTranscodeTask = WeakReference(task)
+                    val result = task.await()
+                    val timeEnd = SystemClock.elapsedRealtime()
+                    val resultInfo = result.videoInfo
+                    val text = "変換終了 ${timeEnd - timeStart}ms $resultInfo"
+                    logText.value = text
+                    log.i(text)
+                    compressedPath.value = result.canonicalPath
+                    compressedMimeType.value = resultInfo.mimeType
+                } finally {
+                    // 保持し続ける必要がないファイルを削除する
+                    arrayOf(tempFile, outFile).forEach {
+                        if (it.canonicalPath != compressedPath.value) {
+                            it.delete()
                         }
                     }
                 }
             } catch (ex: Throwable) {
                 log.e(ex)
-                if (ex is CancellationException) {
-                    logText.value = "キャンセルされた"
-                } else {
-                    logText.value = "${ex.javaClass.simpleName} ${ex.message}"
+                logText.value = when (ex) {
+                    is CancellationException -> "キャンセルされた"
+                    else -> "${ex.javaClass.simpleName} ${ex.message}"
                 }
             } finally {
-                transcodeTask.value = null
+                transcodeBusy.value = false
             }
         }
 
@@ -151,43 +153,8 @@ class ActMain : AppCompatActivity() {
             }
         }
 
-        /**
-         * 調査のためコーデックを列挙して情報をログに出す
-         */
-        fun dumpCodec() {
-            val mcl = MediaCodecList(MediaCodecList.REGULAR_CODECS)
-            for (info in mcl.codecInfos) {
-                try {
-                    if (!info.isEncoder) continue
-                    val caps = try {
-                        info.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC) ?: continue
-                    } catch (ex: Throwable) {
-                        continue
-                    }
-
-                    for (colorFormat in caps.colorFormats) {
-                        log.i( "${info.name} color 0x${colorFormat.toString(16)}")
-                        // OMX.qcom.video.encoder.avc color 7fa30c04 不明
-                        // OMX.qcom.video.encoder.avc color 7f000789 COLOR_FormatSurface
-                        // OMX.qcom.video.encoder.avc color 7f420888 COLOR_FormatYUV420Flexible
-                        // OMX.qcom.video.encoder.avc color 15 COLOR_Format32bitBGRA8888
-                    }
-                    caps.videoCapabilities.bitrateRange?.let { range ->
-                        log.i( "bitrateRange $range")
-                    }
-                    caps.videoCapabilities.supportedFrameRates?.let { range ->
-                        log.i( "supportedFrameRates $range")
-                    }
-                    if (Build.VERSION.SDK_INT >= 28) {
-                        caps.encoderCapabilities.qualityRange?.let { range ->
-                            log.i( "qualityRange $range")
-                        }
-                    }
-                } catch (ex: Throwable) {
-                    log.w(ex)
-                    // type is not supported
-                }
-            }
+        fun cancelTranscode() {
+            refTranscodeTask?.get()?.cancel()
         }
     }
 
@@ -229,13 +196,13 @@ class ActMain : AppCompatActivity() {
             progressPercent.observe(activity) {
                 views.progress.progress = it ?: 0
             }
-            transcodeTask.observe(activity) {
-                val converting = it != null
-                views.btnChooseInput.vg(!converting)
-                views.progress.vg(converting)
-                views.btnCancel.vg(converting)
+            transcodeBusy.observe(activity) {
+                val busy = it ?: false
+                views.btnChooseInput.vg(!busy)
+                views.progress.vg(busy)
+                views.btnCancel.vg(busy)
                 val mask = WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
-                window.setFlags(if (converting) mask else 0, mask)
+                window.setFlags(if (busy) mask else 0, mask)
             }
             compressedFile.observe(activity) {
                 views.btnViewOutput.vg(it != null)
@@ -243,9 +210,9 @@ class ActMain : AppCompatActivity() {
         }
 
         views.run {
-            btnCodecInfo.setOnClickListener { vm.dumpCodec() }
+            btnCodecInfo.setOnClickListener { VideoInfo.dumpCodec() }
             btnChooseInput.setOnClickListener { openPicker() }
-            btnCancel.setOnClickListener { vm.transcodeTask.value?.cancel() }
+            btnCancel.setOnClickListener { vm.cancelTranscode() }
             btnViewOutput.setOnClickListener { vm.openOutput(activity) }
         }
     }
