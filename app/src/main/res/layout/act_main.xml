@@ -19,6 +19,12 @@
             android:layout_height="wrap_content"
             android:text="@string/dump_codec_info" />
 
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/transcoder" />
+
         <RadioGroup
             android:id="@+id/rgTranscoder"
             android:layout_width="match_parent"

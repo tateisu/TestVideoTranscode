@@ -6,4 +6,5 @@
     <string name="litr">LiTr</string>
     <string name="natario">Natario</string>
     <string name="sili">SiliCompressor</string>
+    <string name="transcoder">トランスコーダ</string>
 </resources>

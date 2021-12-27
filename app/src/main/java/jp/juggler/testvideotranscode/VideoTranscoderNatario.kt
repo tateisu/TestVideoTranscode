@@ -7,10 +7,10 @@ import com.otaliastudios.transcoder.strategy.DefaultAudioStrategy
 import com.otaliastudios.transcoder.strategy.DefaultVideoStrategy
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ClosedReceiveChannelException
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -29,39 +29,49 @@ object VideoTranscoderNatario {
     ): File = try {
         withContext(Dispatchers.IO) {
             val resultFile = FileInputStream(inFile).use { inStream ->
-                val progressState = MutableSharedFlow<Float>(
-                    extraBufferCapacity = 1,
-                    onBufferOverflow = BufferOverflow.DROP_OLDEST
-                )
+                // ちょっと発生頻度が多すぎるので間引く
+                val progressChannel = Channel<Float>(capacity = Channel.CONFLATED)
                 val progressSender = launch(Dispatchers.Main) {
-                    progressState.conflate().collect {
-                        onProgress(it)
-                        delay(1000L)
+                    try {
+                        while (true) {
+                            onProgress(progressChannel.receive())
+                            delay(1000L)
+                        }
+                    } catch (ex: ClosedReceiveChannelException) {
+                        log.i("progressChannel closed.")
+                    } catch (ex: CancellationException) {
+                        log.i("progressSender cancelled.")
+                    } catch (ex: Throwable) {
+                        log.w(ex)
                     }
                 }
                 try {
                     suspendCancellableCoroutine<File> { cont ->
+                        // https://github.com/natario1/Transcoder/pull/160
+                        // ワークアラウンドとしてファイルではなくfdを渡す
                         val future = Transcoder.into(outFile.canonicalPath)
                             .addDataSource(inStream.fd)
+                            .setVideoTrackStrategy(
+                                DefaultVideoStrategy.Builder()
+                                    .addResizer(AtMostResizer(540, 960))
+                                    .frameRate(15)
+                                    .keyFrameInterval(10f)
+                                    .bitRate(300_000)
+                                    .build()
+                            )
                             .setAudioTrackStrategy(
                                 DefaultAudioStrategy.Builder()
-                                    .channels(2)
+                                    .channels(1)
                                     .sampleRate(44100)
                                     .bitRate(60_000L)
                                     .build()
                             )
-                            .setVideoTrackStrategy(
-                                DefaultVideoStrategy.Builder()
-                                    .addResizer(AtMostResizer(540, 960))
-                                    .frameRate(10)
-                                    .bitRate(300_000)
-                                    .build()
-                            )
+
                             .setListener(object : TranscoderListener {
                                 override fun onTranscodeProgress(progress: Double) {
-                                    // ちょっと発生頻度が多すぎるので間引く
-                                    if (!progressState.tryEmit(progress.toFloat())) {
-                                        log.w("tryEmit failed.")
+                                    val result = progressChannel.trySend(progress.toFloat())
+                                    if (!result.isSuccess) {
+                                        log.w("trySend $result")
                                     }
                                 }
 
@@ -85,7 +95,8 @@ object VideoTranscoderNatario {
                         cont.invokeOnCancellation { future.cancel(true) }
                     }
                 } finally {
-                    progressSender.cancel()
+                    progressChannel.close()
+                    progressSender.cancelAndJoin()
                 }
             }
             if (resultFile != outFile) outFile.delete()
