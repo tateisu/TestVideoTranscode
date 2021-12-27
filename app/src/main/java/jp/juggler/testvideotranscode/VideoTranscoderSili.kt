@@ -16,26 +16,23 @@ import kotlin.coroutines.resumeWithException
 object VideoTranscoderSili {
     private val log = LogTag("VideoTranscoderSili")
 
-    // 進捗出力がない。
-    // キャンセル操作がない。
-    // 処理中断時に出力ファイルをどうしていいか分からない。
     suspend fun transcodeVideo(
         context: Context,
         inFile: File,
         outFile: File,
     ): File = withContext(Dispatchers.IO) {
         // 一時ファイルの名称を決定できないので、間に1段フォルダを作らないと中断時の後処理ができない
-        var tempDir:File? = null
+        var tempDir: File? = null
         try {
+            tempDir = outFile.parentFile
+                ?.let { File(it, "temp${System.currentTimeMillis()}") }
+                ?.also { it.mkdirs() }
+                ?: error("can't make tempDir")
+
             val info = inFile.videoInfo
             val outSize = info.size.scaleTo(960, 540)
 
-            tempDir = outFile.parentFile
-                ?.let{ File(it,"temp${System.currentTimeMillis()}")}
-                ?.also{ it.mkdirs() }
-                ?: error("can't make tempDir")
-
-            val outPath = suspendCancellableCoroutine<String> { cont->
+            val outPath = suspendCancellableCoroutine<String> { cont ->
                 val thread = thread(start = true) {
                     try {
                         val path = SiliCompressor
@@ -48,16 +45,16 @@ object VideoTranscoderSili {
                                 300_000,
                             )
                         cont.resumeWith(Result.success(path))
-                    }catch (ex:InterruptedException){
-                        cont.resumeWithException(CancellationException("interrupted.",ex))
-                    }catch (ex:Throwable){
+                    } catch (ex: InterruptedException) {
+                        cont.resumeWithException(CancellationException("interrupted.", ex))
+                    } catch (ex: Throwable) {
                         cont.resumeWithException(ex)
                     }
                 }
                 cont.invokeOnCancellation {
                     try {
                         thread.interrupt()
-                    }catch (ignored:Throwable){
+                    } catch (ignored: Throwable) {
                     }
                 }
             }
@@ -71,7 +68,7 @@ object VideoTranscoderSili {
             log.w("delete outFile due to error.")
             outFile.delete()
             throw ex
-        }finally{
+        } finally {
             tempDir?.delete()
         }
     }
