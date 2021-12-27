@@ -57,4 +57,11 @@ dependencies {
     implementation "androidx.lifecycle:lifecycle-livedata-ktx:$lifecycleVersion"
 
     implementation "com.linkedin.android.litr:litr:1.4.16"
+
+    implementation "com.otaliastudios:transcoder:0.10.4"
+
+    implementation "com.iceteck.silicompressorr:silicompressor:2.2.4"
+    implementation('com.googlecode.mp4parser:isoparser:1.1.22') {
+        exclude group: 'org.aspectj', module: 'aspectjrt'
+    }
 }

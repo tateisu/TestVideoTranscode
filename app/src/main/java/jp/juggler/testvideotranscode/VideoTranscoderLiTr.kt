@@ -3,22 +3,12 @@ package jp.juggler.testvideotranscode
 import android.annotation.SuppressLint
 import android.content.Context
 import android.media.MediaFormat
-import android.media.MediaMetadataRetriever
-import android.media.MediaMetadataRetriever.METADATA_KEY_BITRATE
-import android.media.MediaMetadataRetriever.METADATA_KEY_DURATION
-import android.media.MediaMetadataRetriever.METADATA_KEY_MIMETYPE
-import android.media.MediaMetadataRetriever.METADATA_KEY_SAMPLERATE
-import android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_FRAME_COUNT
-import android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT
-import android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION
-import android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH
 import android.net.Uri
-import android.os.Build
-import android.util.Log
 import com.linkedin.android.litr.MediaTransformer
 import com.linkedin.android.litr.TransformationListener
 import com.linkedin.android.litr.TransformationOptions
 import com.linkedin.android.litr.analytics.TrackTransformationInfo
+import jp.juggler.testvideotranscode.VideoInfo.Companion.videoInfo
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -44,16 +34,22 @@ import kotlin.math.min
  *  - モトがカメラ動画むけなので低ビットレートのチューニングはあまりされてないようだ
  *  - むしろコーデック側の挙動を安定させるためにそれなりの数字を指定するべき
  *  - 960x540 24～30fpsで 1.2M～1.7M bps くらいになる
+ *  - デジカメで撮影したフルHD以上 17M bps とかのデータよりは全然軽いので良しとしたい
  */
-object VideoTranscoder {
+object VideoTranscoderLiTr {
 
-    private const val TAG = ActMain.TAG
+    private val log = LogTag("VideoTranscoderLiTr")
 
-    // 動画の長辺と短辺(縦横は関係ない)の制限
-    private const val limitSizeLonger = 640
-    private const val limitSizeShorter = 360
+    // 動画の長辺と短辺の制限。横長でも縦長でも適応する
+    // フルHDの半分らしい
+    private const val limitSizeLonger = 960
+    private const val limitSizeShorter = 540
+
+    // トランスコードせずにすませる、許容可能なビットレート(bits per second)
+    private const val limitBps = 1_800_000
 
     // 映像トラックのビットレート指定
+    // MediaCodecだと指定を上回る結果になる事が多い
     private const val targetVideoBitrate = 300_000
 
     // 音声トラックのビットレート指定
@@ -87,127 +83,6 @@ object VideoTranscoder {
         }
     }
 
-    private fun MediaMetadataRetriever.string(key: Int) =
-        extractMetadata(key)
-
-    private fun MediaMetadataRetriever.int(key: Int) =
-        string(key)?.toIntOrNull()
-
-    private fun MediaMetadataRetriever.long(key: Int) =
-        string(key)?.toLongOrNull()
-
-    // Android APIのSizeはsetterがないので雑に用意する
-    // equalsのためにデータクラスにする
-    data class Size(var w: Int, var h: Int) {
-        val aspect: Float get() = w.toFloat() / h.toFloat()
-        override fun toString() = "[$w,$h]"
-    }
-
-    /**
-     * 動画の情報
-     */
-    @Suppress("MemberVisibilityCanBePrivate")
-    class VideoInfo(
-        val file: File,
-        mmr: MediaMetadataRetriever
-    ) {
-        val mimeType = mmr.string(METADATA_KEY_MIMETYPE)
-
-        val rotation = mmr.int(METADATA_KEY_VIDEO_ROTATION) ?: 0
-
-        val size = Size(
-            mmr.int(METADATA_KEY_VIDEO_WIDTH) ?: 0,
-            mmr.int(METADATA_KEY_VIDEO_HEIGHT) ?: 0,
-        )
-
-        val bitrate = mmr.int(METADATA_KEY_BITRATE)
-
-        val duration = mmr.long(METADATA_KEY_DURATION)
-            ?.toFloat()?.div(1000)?.takeIf { it > 0.1f }
-
-        val frameCount = if (Build.VERSION.SDK_INT >= 28) {
-            mmr.int(METADATA_KEY_VIDEO_FRAME_COUNT)?.takeIf { it > 0 }
-        } else {
-            null
-        }
-
-        val frameRatio = if (frameCount != null && duration != null) {
-            frameCount.toFloat().div(duration)
-        } else {
-            null
-        }
-
-        val audioSampleRate = if (Build.VERSION.SDK_INT >= 31) {
-            mmr.int(METADATA_KEY_SAMPLERATE)?.takeIf { it > 0 }
-        } else {
-            null
-        }
-
-        /**
-         * 動画のファイルサイズが十分に小さいなら真
-         */
-        val isSmallEnough: Boolean
-            get() {
-                val fileSize = file.length()
-                // ファイルサイズを取得できないならエラー
-                if (fileSize <= 0L) error("too small file. ${file.canonicalPath}")
-                // ファイルサイズが500KB以内ならビットレートを気にしない
-                if (fileSize < 500_000) return true
-                // 時間帳が短すぎる(&ファイルサイズが1MB以上)なら再エンコード必要とする
-                if (duration == null || duration < 0.1f) return false
-                // bpsを計算
-                val bpsActual = fileSize.toFloat().div(duration).times(8).toInt()
-                val bpsLimit = (targetVideoBitrate + targetAudioBitrate).plus(1024)
-                Log.i(
-                    TAG,
-                    "isSmallEnough duration=$duration, bps=$bpsActual/$bpsLimit"
-                )
-                return bpsActual < bpsLimit
-            }
-
-        override fun toString() =
-            "rotation=$rotation, size=$size, frameRatio=$frameRatio, bitrate=$bitrate, audioSampleRate=$audioSampleRate, mimeType=$mimeType, file=${file.canonicalPath}"
-    }
-
-    private val File.videoInfo: VideoInfo
-        get() = MediaMetadataRetriever().use { mmr ->
-            mmr.setDataSource(canonicalPath)
-            VideoInfo(this, mmr)
-        }
-
-    /**
-     * アスペクト比を維持しつつ上限に合わせた解像度を提案する
-     * - 拡大はしない
-     */
-    private fun scaling(inSize: Size): Size {
-        // ゼロ除算対策
-        if (inSize.w < 1 || inSize.h < 1) {
-            return Size(limitSizeLonger, limitSizeShorter)
-        }
-        val inAspect = inSize.aspect
-        // 入力の縦横に合わせて上限を決める
-        val outSize = if (inAspect >= 1f) {
-            Size(limitSizeLonger, limitSizeShorter)
-        } else {
-            Size(limitSizeShorter, limitSizeLonger)
-        }
-        // 縦横比を比較する
-        return if (inAspect >= outSize.aspect) {
-            // 入力のほうが横長なら横幅基準でスケーリングする
-            // 拡大はしない
-            val scale = outSize.w.toFloat() / inSize.w.toFloat()
-            if (scale >= 1f) inSize else outSize.apply {
-                h = min(h, (scale * inSize.h + 0.5f).toInt())
-            }
-        } else {
-            // 入力のほうが縦長なら縦幅基準でスケーリングする
-            // 拡大はしない
-            val scale = outSize.h.toFloat() / inSize.h.toFloat()
-            if (scale >= 1f) inSize else outSize.apply {
-                w = min(w, (scale * inSize.w + 0.5f).toInt())
-            }
-        }
-    }
 
     /**
      * 出力する映像トラックのMediaFormat
@@ -299,21 +174,21 @@ object VideoTranscoder {
         outFile: File,
         // 進捗率: 0f～1f
         onProgress: (Float) -> Unit,
-    ): VideoInfo {
+    ): File {
         try {
             // 入力データの詳細を調べる
             val info = inFile.videoInfo
-            Log.i(TAG, info.toString())
+            log.i(info.toString())
 
             // 出力サイズを決める
-            val outSize = scaling(info.size)
-            Log.i(TAG, "outSize=$outSize")
+            val outSize = info.size.scaleTo(limitSizeLonger, limitSizeShorter)
+            log.i("outSize=$outSize")
 
             // 入力ファイルサイズや出力サイズによっては変換せず入力データをそのまま使う
-            if (info.isSmallEnough && outSize == info.size) {
-                Log.i(TAG, "skip transcode and return inFile…")
+            if (info.isSmallEnough(limitBps) && outSize == info.size) {
+                log.i("skip transcode and return inFile…")
                 outFile.delete()
-                return info
+                return inFile
             }
 
             // トランスコード処理を行い、コールバックを非同期待機する
@@ -338,11 +213,9 @@ object VideoTranscoder {
                 cont.invokeOnCancellation { mediaTransformer.cancel(requestId) }
             }
             // 正常終了
-            val outInfo = outFile.videoInfo
-            Log.i(TAG, "$outInfo")
-            return outInfo
+            return outFile
         } catch (ex: Throwable) {
-            Log.w(TAG, "delete outFile due to ${ex.javaClass.simpleName} ${ex.message}")
+            log.w("delete outFile due to error.")
             outFile.delete()
             throw ex
         }

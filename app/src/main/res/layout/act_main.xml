@@ -19,6 +19,32 @@
             android:layout_height="wrap_content"
             android:text="@string/dump_codec_info" />
 
+        <RadioGroup
+            android:id="@+id/rgTranscoder"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <RadioButton
+                android:id="@+id/rbLitr"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:checked="true"
+                android:text="@string/litr" />
+
+            <RadioButton
+                android:id="@+id/rbNatario"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/natario" />
+
+            <RadioButton
+                android:id="@+id/rbSili"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/sili" />
+        </RadioGroup>
+
         <Button
             android:id="@+id/btnChooseInput"
             android:layout_width="match_parent"

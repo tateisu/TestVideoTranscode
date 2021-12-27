@@ -3,4 +3,7 @@
     <string name="choose_input">入力ファイルを選択</string>
     <string name="view_output">出力ファイルを表示</string>
     <string name="dump_codec_info">コーデック情報をログに出力</string>
+    <string name="litr">LiTr</string>
+    <string name="natario">Natario</string>
+    <string name="sili">SiliCompressor</string>
 </resources>
