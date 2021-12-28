@@ -7,7 +7,7 @@
 - https://github.com/linkedin/LiTr
 - LinkedIn で使われている
 - 動作は安定している。
-- 回転情報はそのまま残る。(ffmpegと同じ挙動)
+- 回転情報はそのまま残る。
 - フレームレート変更機能なし。
 ### com.otaliastudios:transcoder:0.10.4
 - https://github.com/natario1/Transcoder
