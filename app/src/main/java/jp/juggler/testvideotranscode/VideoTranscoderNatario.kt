@@ -29,7 +29,7 @@ object VideoTranscoderNatario {
     ): File = try {
         withContext(Dispatchers.IO) {
             val resultFile = FileInputStream(inFile).use { inStream ->
-                // ちょっと発生頻度が多すぎるので間引く
+                // 進捗コールバックの発生頻度が多すぎるので間引く
                 val progressChannel = Channel<Float>(capacity = Channel.CONFLATED)
                 val progressSender = launch(Dispatchers.Main) {
                     try {

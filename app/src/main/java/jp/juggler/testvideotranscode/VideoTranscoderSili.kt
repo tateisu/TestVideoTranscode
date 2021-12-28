@@ -46,8 +46,10 @@ object VideoTranscoderSili {
                             )
                         cont.resumeWith(Result.success(path))
                     } catch (ex: InterruptedException) {
+                        log.w(ex)
                         cont.resumeWithException(CancellationException("interrupted.", ex))
                     } catch (ex: Throwable) {
+                        log.w(ex)
                         cont.resumeWithException(ex)
                     }
                 }
